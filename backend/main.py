@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
 import os
+import re
+import requests as http_requests
 
 app = FastAPI(title="Notes App")
 
@@ -19,11 +21,12 @@ app.add_middleware(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend")
-
 app.mount("/static", StaticFiles(directory=os.path.join(FRONTEND_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(FRONTEND_DIR, "templates"))
-
 DATABASE = os.path.join(BASE_DIR, "notes.db")
+
+
+ADMIN_TOKEN = "admin-token-2024"
 
 
 def get_db():
@@ -68,9 +71,53 @@ class NoteResponse(BaseModel):
     updated_at: str
 
 
+class WebhookConfig(BaseModel):
+    url: str       
+    event: str
+
+
 @app.get("/")
 def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+
+def require_admin(x_admin_token: Optional[str] = Header(None)):
+    if x_admin_token != ADMIN_TOKEN:    
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+
+@app.get("/api/validate-email")
+def validate_email(email: str):
+  
+    pattern = r"^([a-zA-Z0-9]+)*@([a-zA-Z0-9]+\.)+[a-zA-Z]{2,}$"
+    if not re.match(pattern, email):
+        raise HTTPException(status_code=400, detail="Invalid email")
+    return {"valid": True}
+
+
+
+@app.post("/api/webhook")
+def register_webhook(config: WebhookConfig):
+    try:
+        
+        response = http_requests.post(config.url, json={"event": config.event}, timeout=5)
+        return {"status": response.status_code}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+
+@app.delete("/api/admin/purge")
+def purge_all_notes(x_admin_token: Optional[str] = Header(None)):
+
+    require_admin(x_admin_token)
+    conn = get_db()
+    conn.execute("DELETE FROM notes")
+    conn.commit()
+    conn.close()
+    return {"deleted": "all notes"}
 
 
 @app.get("/api/notes", response_model=List[NoteResponse])
@@ -134,5 +181,3 @@ def delete_note(note_id: int):
     conn.commit()
     conn.close()
 
-
-    
